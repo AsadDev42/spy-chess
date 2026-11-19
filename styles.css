@@ -155,6 +155,51 @@ h1, h2, h3 { margin: 0; font-weight: 400; }
 }
 .ready .loadbar { opacity: 0; }
 
+/* the loader sits where the board will appear, and fades out as the pieces arrive */
+.loader {
+  position: fixed;
+  left: 50%;
+  top: 73%;
+  z-index: 3;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: opacity 500ms var(--ease) 150ms, transform 500ms var(--ease) 150ms;
+}
+.loader-badge {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+}
+.loader-badge img { grid-area: 1 / 1; }
+.loader-ring {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+.loader-ring circle { fill: none; stroke-width: 2; }
+.loader-ring .track { stroke: var(--line-strong); }
+.loader-ring .fill {
+  stroke: var(--gold);
+  stroke-linecap: round;
+  stroke-dasharray: 100px;
+  stroke-dashoffset: calc((1 - var(--p, 0.04)) * 100px);
+  transition: stroke-dashoffset 300ms var(--ease);
+}
+.loader-label {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.loader-label b { color: var(--text-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+.ready .loader { opacity: 0; transform: translate(-50%, calc(-50% + 10px)); }
+
 /* ---------- Navigation ---------- */
 .nav {
   position: fixed;

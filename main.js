@@ -295,7 +295,14 @@ const hat = new THREE.Group();
 const SET_SCALE = 16; // the model's squares are 0.0625 units wide
 const BOARD_TOP = 0.0172; // height of the playing surface in model units
 const loadbar = document.getElementById('loadbar');
-const setProgress = (p) => loadbar.style.setProperty('--p', Math.max(0.04, p).toFixed(3));
+const loaderPct = document.getElementById('loaderPct');
+let shownProgress = 0;
+const setProgress = (p) => {
+  // progress only moves forward, so the bar and ring never jump back
+  shownProgress = Math.max(shownProgress, p);
+  root.style.setProperty('--p', Math.max(0.04, shownProgress).toFixed(3));
+  if (loaderPct) loaderPct.textContent = `${Math.round(shownProgress * 100)}%`;
+};
 
 const draco = new DRACOLoader().setDecoderPath(`${THREE_CDN}/examples/jsm/libs/draco/gltf/`);
 const ktx2 = new KTX2Loader().setTranscoderPath(`${THREE_CDN}/examples/jsm/libs/basis/`).detectSupport(renderer);

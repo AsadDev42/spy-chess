@@ -26,8 +26,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="preload" href="assets/models/chess-set-lite.glb" as="fetch" crossorigin>
-  <link rel="stylesheet" href="styles.css">
+  <!-- the import map has to come before any module preload -->
   <script type="importmap">
     {
       "imports": {
@@ -37,12 +36,36 @@
       }
     }
   </script>
+  <link rel="preload" href="assets/models/chess-set-lite.glb" as="fetch" crossorigin fetchpriority="high">
+  <link rel="preload" href="assets/env/studio-lite.hdr" as="fetch" crossorigin>
+  <!-- the 3D code and its decoders download alongside the model instead of after it -->
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js">
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js">
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/DRACOLoader.js">
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/KTX2Loader.js">
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/RGBELoader.js">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/gltf/draco_wasm_wrapper.js" as="fetch" crossorigin>
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/gltf/draco_decoder.wasm" as="fetch" crossorigin>
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/basis/basis_transcoder.js" as="fetch" crossorigin>
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/basis/basis_transcoder.wasm" as="fetch" crossorigin>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <canvas id="scene" aria-label="A 3D chess set. Drag to turn the board." role="img"></canvas>
   <div class="scrim" aria-hidden="true"></div>
   <div class="scrim scrim-top" aria-hidden="true"></div>
   <div class="loadbar" id="loadbar" aria-hidden="true"><span></span></div>
+  <div class="loader" id="loader" role="status">
+    <div class="loader-badge" aria-hidden="true">
+      <svg class="loader-ring" viewBox="0 0 64 64">
+        <circle class="track" cx="32" cy="32" r="30" pathLength="100"></circle>
+        <circle class="fill" cx="32" cy="32" r="30" pathLength="100"></circle>
+      </svg>
+      <img class="logo-on-dark" src="assets/spy_chess_logo_light-320.webp" alt="" width="34" height="34">
+      <img class="logo-on-light" src="assets/spy_chess_logo_navy-320.webp" alt="" width="34" height="34">
+    </div>
+    <p class="loader-label">Setting up the board <b id="loaderPct">0%</b></p>
+  </div>
 
   <header class="nav" id="nav">
     <div class="nav-inner">
