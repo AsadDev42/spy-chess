@@ -113,6 +113,7 @@ h1, h2, h3 { margin: 0; font-weight: 400; }
   cursor: default;
 }
 .ready #scene { opacity: 1; }
+#scene, .scrim { translate: 0 calc(-1 * var(--lift, 0px)); }
 .is-grabbable #scene { cursor: grab; }
 .is-pickable #scene { cursor: pointer; }
 .is-dragging #scene, .is-moving #scene, .is-moving body { cursor: grabbing; }
@@ -245,9 +246,10 @@ h1, h2, h3 { margin: 0; font-weight: 400; }
 :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 
 /* ---------- 3D chapters ---------- */
-main { position: relative; z-index: 2; }
+main { position: relative; z-index: 2; pointer-events: none; }
+.middle { pointer-events: auto; }
 
-.chapter { position: relative; height: 180vh; }
+.chapter { position: relative; height: 180vh; pointer-events: none; } /* clicks pass through to the 3D board; .copy turns them back on */
 .chapter.hero { height: 100vh; height: 100svh; }
 .chapter.demo { height: 240vh; }
 .chapter.cta { height: 100vh; height: 100svh; }

@@ -251,10 +251,12 @@ const victim = byStory('c6');
 const blackKing = byStory('h8');
 const ghostTargets = ['f3', 'c1', 'a2'].map(byStory);
 const C6 = square('c6');
-const SIDELINE = new THREE.Vector3(-4.85, 0.03, 0.9); // the captured piece rests on the frame rim, beside a4
 // both parts of the capture share one clock, so the piece leaves exactly as the knight lands
 const KNIGHT_HOP = [0.15, 0.85];
-const VICTIM_OUT = [0.55, 0.95];
+const VICTIM_OUT = [0.5, 0.9];
+const FRAME_X = 4.5; // middle of the frame strip, beside the a- and h-files
+const FRAME_Y = 0.03;
+const VICTIM_SPOT = new THREE.Vector3(-FRAME_X, FRAME_Y, 0.9);
 
 for (const p of pieces) {
   if (!p.isWhite) {
@@ -311,9 +313,11 @@ function typeOf(name) {
   return null;
 }
 
+let setMaterials = {};
 function installSet(gltf) {
   const model = gltf.scene;
   const materials = {};
+  setMaterials = materials;
   model.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = true;
@@ -526,6 +530,9 @@ window.addEventListener('resize', resize);
 let cGoal = 0;
 let c = 0;
 let covered = false;
+// once the footer scrolls in, the fixed scene scrolls up with the closing screen so the footer never covers the board
+const footEl = document.querySelector('.foot');
+let sceneLift = 0;
 const nav = document.getElementById('nav');
 let activeSide = '';
 function onScroll() {
@@ -540,6 +547,11 @@ function onScroll() {
   }
   const r = middle.getBoundingClientRect();
   covered = r.top <= 0 && r.bottom >= window.innerHeight;
+  const nextLift = footEl ? Math.max(0, Math.round(window.innerHeight - footEl.getBoundingClientRect().top)) : 0;
+  if (nextLift !== sceneLift) {
+    sceneLift = nextLift;
+    root.style.setProperty('--lift', `${sceneLift}px`);
+  }
 }
 window.addEventListener('scroll', onScroll, { passive: true });
 
@@ -602,7 +614,7 @@ const boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const hit = new THREE.Vector3();
 
 function setPointer(x, y) {
-  pointer.set((x / W) * 2 - 1, -(y / H) * 2 + 1);
+  pointer.set((x / W) * 2 - 1, -((y + sceneLift) / H) * 2 + 1);
   pointerTime = clock;
 }
 function pointerOnBoard(out) {
@@ -629,23 +641,138 @@ const drag = { piece: null, mode: null, point: new THREE.Vector3() };
 // the rule chapters keep their scripted story
 const sandMode = () => (c < 0.35 ? 'hero' : c > 4.7 ? 'play' : null);
 const sandbox = { hero: new Map(), play: new Map(), caps: { hero: { w: 0, b: 0 }, play: { w: 0, b: 0 } } };
+// captured pieces stand upright on the frame: Black's on the a-file side, White's on the h-file side
+const CAPTURED_SCALE = 0.72;
+const capturedSpot = (color, k) =>
+  new THREE.Vector3(color === 'w' ? FRAME_X : -FRAME_X, FRAME_Y, (color === 'w' ? -1 : 1) * (3.6 - (k % 14) * 0.55));
 const basePos = (p, mode) => (mode === 'hero' ? p.story : p.start);
 function squareOf(p, mode) {
   const e = sandbox[mode].get(p);
-  if (e && e.lie) return null; // captured pieces lie on the rim
+  if (e && e.captured) return null; // captured pieces stand beside the board
   return e ? e.pos : basePos(p, mode);
 }
-function setEntry(p, mode, pos, lie, from) {
-  sandbox[mode].set(p, { pos, lie, from: from.clone(), t0: clock });
+function setEntry(p, mode, pos, lie, from, extra) {
+  sandbox[mode].set(p, { pos, lie, from: from.clone(), t0: clock, ...extra });
 }
 function clearSandbox(mode) {
+  if (sel.mode === mode) deselect();
   // every moved piece glides back to its square
-  for (const [p] of sandbox[mode]) setEntry(p, mode, basePos(p, mode).clone(), 0, p.group.position);
+  for (const [p, e] of sandbox[mode]) setEntry(p, mode, basePos(p, mode).clone(), 0, p.group.position, { back: !!e.captured });
   sandbox.caps[mode] = { w: 0, b: 0 };
   setTimeout(() => {
-    for (const [p, e] of sandbox[mode]) if (!e.lie && e.pos.equals(basePos(p, mode))) sandbox[mode].delete(p);
+    for (const [p, e] of sandbox[mode]) if (!e.captured && e.pos.equals(basePos(p, mode))) sandbox[mode].delete(p);
   }, 600);
 }
+// ---------- where a piece can go: tap it and its moves light up on the board ----------
+// (normal chess moves that do not leave your own king in check; castling and en passant are left out)
+const fileOf = (v) => Math.round(v.x + 3.5);
+const rankOf = (v) => Math.round(3.5 - v.z);
+function occupancy(mode) {
+  const occ = new Map();
+  for (const q of pieces) {
+    const sq = squareOf(q, mode);
+    if (sq) occ.set(fileOf(sq) + rankOf(sq) * 8, q);
+  }
+  return occ;
+}
+const KING_STEPS = [[1, 1], [1, -1], [-1, 1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1]];
+const KNIGHT_STEPS = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]];
+const RAYS = { B: KING_STEPS.slice(0, 4), R: KING_STEPS.slice(4), Q: KING_STEPS };
+// squares a piece standing on (f0, r0) could move to; attacksOnly gives the squares it threatens
+function pseudoMoves(p, f0, r0, occ, attacksOnly) {
+  const out = [];
+  const inside = (f, r) => f >= 0 && f < 8 && r >= 0 && r < 8;
+  const tryAdd = (f, r) => {
+    if (!inside(f, r)) return false;
+    const q = occ.get(f + r * 8);
+    if (!q) {
+      out.push({ f, r, cap: null });
+      return true;
+    }
+    if (q.color !== p.color) out.push({ f, r, cap: q });
+    return false;
+  };
+  if (p.type === 'P') {
+    const dir = p.isWhite ? 1 : -1;
+    const one = r0 + dir;
+    for (const df of [-1, 1]) {
+      const f = f0 + df;
+      if (!inside(f, one)) continue;
+      const q = occ.get(f + one * 8);
+      if (attacksOnly) out.push({ f, r: one, cap: q || null });
+      else if (q && q.color !== p.color) out.push({ f, r: one, cap: q });
+    }
+    if (!attacksOnly && inside(f0, one) && !occ.has(f0 + one * 8)) {
+      out.push({ f: f0, r: one, cap: null });
+      const two = r0 + 2 * dir;
+      if (r0 === (p.isWhite ? 1 : 6) && !occ.has(f0 + two * 8)) out.push({ f: f0, r: two, cap: null });
+    }
+  } else if (p.type === 'N' || p.type === 'K') {
+    for (const [a, b] of p.type === 'N' ? KNIGHT_STEPS : KING_STEPS) tryAdd(f0 + a, r0 + b);
+  } else {
+    for (const [a, b] of RAYS[p.type]) {
+      for (let k = 1; k < 8 && tryAdd(f0 + a * k, r0 + b * k); k++);
+    }
+  }
+  return out;
+}
+function legalMoves(p, mode) {
+  const at = squareOf(p, mode);
+  if (!at) return [];
+  const f0 = fileOf(at);
+  const r0 = rankOf(at);
+  const occ = occupancy(mode);
+  return pseudoMoves(p, f0, r0, occ, false).filter((mv) => {
+    if (mv.cap && mv.cap.type === 'K') return false;
+    // play the move on a copy of the board and check that our king is not attacked afterwards
+    const after = new Map(occ);
+    after.delete(f0 + r0 * 8);
+    after.set(mv.f + mv.r * 8, p);
+    let king = -1;
+    for (const [k, q] of after) if (q.type === 'K' && q.color === p.color) king = k;
+    if (king < 0) return true;
+    for (const [k, q] of after) {
+      if (q.color === p.color) continue;
+      if (pseudoMoves(q, k % 8, Math.floor(k / 8), after, true).some((a) => a.f + a.r * 8 === king)) return false;
+    }
+    return true;
+  });
+}
+
+const HINT_GOLD = new THREE.Color('#e2b714');
+const HINT_DOT_GEO = new THREE.CircleGeometry(0.14, 32).rotateX(-Math.PI / 2);
+const hintDots = Array.from({ length: 28 }, () => marker(HINT_DOT_GEO, HINT_GOLD));
+const hintRings = Array.from({ length: 8 }, () => marker(RING_GEO, HINT_GOLD));
+const selRing = marker(RING_GEO, HINT_GOLD);
+const sel = { piece: null, mode: null, moves: [], t0: 0 };
+function selectPiece(p, mode) {
+  sel.piece = p;
+  sel.mode = mode;
+  sel.moves = legalMoves(p, mode);
+  sel.t0 = clock;
+}
+function deselect() {
+  sel.piece = null;
+  sel.moves = [];
+}
+// a tap on a lit square (or on a piece standing on one) plays the move
+function tapMoveTarget(point, tappedPiece) {
+  if (!sel.piece || sandMode() !== sel.mode) return null;
+  if (tappedPiece === sel.piece) return null; // tapping the selected piece again puts it down
+  const at = (f, r) => sel.moves.find((mv) => mv.f === f && mv.r === r) || null;
+  // the lit square under the pointer wins, even when a piece in front of it catches the tap
+  if (point) {
+    const mv = at(Math.round(point.x + 3.5), Math.round(3.5 - point.z));
+    if (mv) return mv;
+  }
+  // tapping an enemy piece that can be taken
+  if (tappedPiece && tappedPiece.color !== sel.piece.color) {
+    const sq = squareOf(tappedPiece, sel.mode);
+    if (sq) return at(fileOf(sq), rankOf(sq));
+  }
+  return null;
+}
+
 function dropPiece(p, mode, point) {
   const from = p.group.position.clone();
   const fx = Math.round(point.x + 3.5);
@@ -654,18 +781,18 @@ function dropPiece(p, mode, point) {
   if (fx < 0 || fx > 7 || rz < 0 || rz > 7) return setEntry(p, mode, home.clone(), 0, from);
   const target = new THREE.Vector3(fx - 3.5, 0, 3.5 - rz);
   if (target.distanceTo(home) < 0.1) return setEntry(p, mode, home.clone(), 0, from);
+  // only legal moves land; anything else glides back home
+  if (!legalMoves(p, mode).some((mv) => mv.f === fx && mv.r === rz)) return setEntry(p, mode, home.clone(), 0, from);
   const occupant = pieces.find((q) => {
     if (q === p) return false;
     const sq = squareOf(q, mode);
     return sq && sq.distanceTo(target) < 0.1;
   });
   if (occupant && occupant.color === p.color) return setEntry(p, mode, home.clone(), 0, from);
+  // the captured piece hops off the board and stands in its owner's row on the frame
   if (occupant) {
-    // the captured piece is laid down on the rim, on its owner's side
     const k = sandbox.caps[mode][occupant.color]++;
-    const side = occupant.isWhite ? -1 : 1;
-    const rim = new THREE.Vector3(side * 4.85, 0.45, -3.2 + (k % 9) * 0.8);
-    setEntry(occupant, mode, rim, side, occupant.group.position);
+    setEntry(occupant, mode, capturedSpot(occupant.color, k), 0, occupant.group.position, { captured: true });
   }
   setEntry(p, mode, target, 0, from);
 }
@@ -674,7 +801,13 @@ function tapPiece(p) {
     guess(p);
     return;
   }
+  const mode = sandMode();
+  if (mode && sel.piece === p) {
+    deselect();
+    return;
+  }
   p.tap = clock; // a small jump and turn
+  if (mode) selectPiece(p, mode);
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -705,6 +838,7 @@ window.addEventListener(
         drag.piece = press.piece;
         drag.mode = mode;
         drag.piece.tap = undefined;
+        selectPiece(drag.piece, mode);
         root.classList.add('is-moving');
       } else {
         orbit.active = true;
@@ -740,8 +874,16 @@ function endPress(e, cancelled) {
     if (cancelled) setEntry(drag.piece, drag.mode, home.clone(), 0, drag.piece.group.position);
     else dropPiece(drag.piece, drag.mode, drag.point);
     drag.piece = null;
-  } else if (!press.moved && !cancelled && press.piece) {
-    tapPiece(press.piece);
+    deselect();
+  } else if (!press.moved && !cancelled) {
+    raycaster.setFromCamera(pointer, camera);
+    const onBoard = raycaster.ray.intersectPlane(boardPlane, hit) ? hit : null;
+    const mv = tapMoveTarget(onBoard, press.piece);
+    if (mv) {
+      dropPiece(sel.piece, sel.mode, new THREE.Vector3(mv.f - 3.5, 0, 3.5 - mv.r));
+      deselect();
+    } else if (press.piece) tapPiece(press.piece);
+    else deselect();
   }
   orbit.active = false;
   root.classList.remove('is-dragging', 'is-moving');
@@ -835,6 +977,7 @@ function storyTransform(p, s, out) {
   let rotY = p.baseRotY;
   let rotZ = 0;
   let flip = 0;
+  let scale = 1;
   if (p === spyKnight) {
     const a = easeInOut(s.activate);
     out.y += Math.sin(Math.PI * a) * 0.8;
@@ -846,15 +989,13 @@ function storyTransform(p, s, out) {
     out.y += Math.sin(Math.PI * m) * 2.2;
   }
   if (p === victim) {
-    // knocked off just as the knight comes down: it tips over and slides along the empty b5-a4 diagonal to the rim
-    const m = ramp(s.command, VICTIM_OUT[0], VICTIM_OUT[1]);
-    const across = easeOut(m);
-    out.x = lerp(C6.x, SIDELINE.x, across);
-    out.z = lerp(C6.z, SIDELINE.z, across);
-    out.y = Math.sin(Math.PI * m) * 0.9 + m * (SIDELINE.y + 0.42);
-    rotZ = smooth(ramp(m, 0, 0.6)) * (Math.PI / 2);
+    // taken while the knight is in the air: it hops along the empty b5-a4 diagonal and stands on the frame
+    const m = easeInOut(ramp(s.command, VICTIM_OUT[0], VICTIM_OUT[1]));
+    out.lerp(VICTIM_SPOT, m);
+    out.y += Math.sin(Math.PI * m) * 1.4;
+    scale = lerp(1, CAPTURED_SCALE, m);
   }
-  return { rotY, rotZ, flip };
+  return { rotY, rotZ, flip, scale };
 }
 
 function update(dt, rawDt) {
@@ -907,7 +1048,7 @@ function update(dt, rawDt) {
     }
   }
   // opening shot: the camera starts high and far, then settles into the hero framing
-  if (introStart >= 0 && clock - introStart > 4) introStart = -1;
+  if (introStart >= 0 && clock - introStart > INTRO_HANG + 2) introStart = -1;
   const intro = introStart < 0 ? 1 : clamp01((clock - introStart) / 2.8);
   const introCam = 1 - easeInOut(intro);
   camGoal.r += introCam * 12;
@@ -959,6 +1100,27 @@ function update(dt, rawDt) {
   // moves on the hero board are put back once the visitor has scrolled well into the rules
   if (c > 1.5 && sandbox.hero.size) sandbox.hero.clear();
 
+  // ----- the selected piece's moves -----
+  if (sel.piece && sandMode() !== sel.mode) deselect();
+  const hintA = sel.piece ? smooth(clamp01((clock - sel.t0) / 0.25)) : 0;
+  let di = 0;
+  let ri = 0;
+  for (const mv of sel.moves) {
+    const m = mv.cap ? hintRings[ri++] : hintDots[di++];
+    if (!m) continue;
+    m.position.set(mv.f - 3.5, MARK_Y, 3.5 - mv.r);
+    m.visible = hintA > 0.002;
+    m.material.opacity = hintA * (mv.cap ? 0.95 : 0.7);
+  }
+  for (; di < hintDots.length; di++) hintDots[di].visible = false;
+  for (; ri < hintRings.length; ri++) hintRings[ri].visible = false;
+  const selSq = sel.piece && !drag.piece ? squareOf(sel.piece, sel.mode) : null;
+  selRing.visible = !!selSq && hintA > 0.002;
+  if (selSq) {
+    selRing.position.set(selSq.x, MARK_Y, selSq.z);
+    selRing.material.opacity = hintA * 0.55;
+  }
+
   // ----- pieces -----
   for (const p of pieces) {
     const st = storyTransform(p, s, tmp);
@@ -975,6 +1137,7 @@ function update(dt, rawDt) {
     let rotY = lerp(st.rotY, p.baseRotY, rt);
     let rotZ = lerp(st.rotZ, 0, rt);
     let flip = st.flip * (1 - rt);
+    let scale = lerp(st.scale, 1, rt);
 
     // moves the visitor made: the hero board fades them out as the story starts, the play board as it fades in
     for (const [mode, weight] of [['hero', heroW], ['play', rt]]) {
@@ -982,9 +1145,11 @@ function update(dt, rawDt) {
       if (!e || weight <= 0) continue;
       const u = clamp01((clock - e.t0) / 0.45);
       const at = e.from.clone().lerp(e.pos, easeOut(u));
-      at.y += Math.sin(Math.PI * u) * 0.5;
+      // captured pieces and pieces coming back from the frame jump high enough to clear the others
+      at.y += Math.sin(Math.PI * u) * (e.captured || e.back ? 1.4 : 0.5);
       pos.lerp(at, weight);
-      rotZ = lerp(rotZ, e.lie * (Math.PI / 2) * easeOut(u), weight);
+      if (e.captured) scale = lerp(scale, lerp(1, CAPTURED_SCALE, easeOut(u)), weight);
+      else if (e.back) scale = lerp(scale, lerp(CAPTURED_SCALE, 1, easeOut(u)), weight);
     }
 
     let ring = 0;
@@ -1015,14 +1180,24 @@ function update(dt, rawDt) {
       }
     }
 
-    // opening shot: pieces drop onto their squares, rank by rank
+    // opening shot: every piece hangs in the air over its square, then they fall onto the board one by one
     if (introStart >= 0) {
-      const delay = 0.5 + (p.isWhite ? 0 : 0.35) + (p.idx % 8) * 0.06 + (p.type === 'P' ? 0.2 : 0);
-      const t = clamp01((clock - introStart - delay) / 0.8);
-      if (t < 1) {
-        const e = 1 - Math.pow(1 - t, 3);
-        pos.y += (1 - e) * 5;
-        rotY += (1 - e) * 0.6;
+      const t = clock - introStart;
+      const h1 = ((p.idx * 73) % 17) / 17;
+      const h2 = ((p.idx * 37 + 11) % 23) / 23;
+      const lift = 1.7 + h1 * 1.3;
+      const fallAt = INTRO_HANG + h2 * 0.8;
+      const bob = (at) => Math.sin(at * 2.2 + p.idx) * 0.09;
+      if (t < fallAt) {
+        pos.y += lift + bob(t);
+        rotY += (fallAt - t) * 0.6 * (h1 - 0.5);
+      } else if (t < fallAt + INTRO_FALL) {
+        const u = (t - fallAt) / INTRO_FALL;
+        pos.y += (lift + bob(fallAt)) * (1 - u * u);
+      } else {
+        // a small bounce as it lands
+        const u = clamp01((t - fallAt - INTRO_FALL) / 0.3);
+        pos.y += Math.sin(Math.PI * u) * 0.12;
       }
     }
 
@@ -1051,6 +1226,7 @@ function update(dt, rawDt) {
 
     p.group.position.copy(pos);
     p.group.rotation.set(0, rotY, rotZ);
+    p.group.scale.setScalar(scale);
 
     if (!p.isWhite) {
       setLook(p, flip > 0.5);
@@ -1114,6 +1290,8 @@ function update(dt, rawDt) {
 
 // ---------- loop ----------
 let introStart = -1;
+const INTRO_HANG = 1.8; // seconds the pieces float before the first one falls
+const INTRO_FALL = 0.5;
 let last = performance.now();
 let frames = 0;
 let slowFrames = 0;
@@ -1153,18 +1331,57 @@ renderer.setAnimationLoop((now) => {
   if (lenis) lenis.raf(now);
 });
 
-const envPromise = new RGBELoader()
-  .loadAsync('assets/env/studio.hdr')
-  .then((tex) => {
+// first visit: a light preview of the set (smaller texture mips) and of the studio light shows the board fast;
+// the full-resolution textures and light load right after and replace them, so the final look is unchanged
+function loadEnv(url) {
+  return new RGBELoader().loadAsync(url).then((tex) => {
     tex.mapping = THREE.EquirectangularReflectionMapping;
+    const old = scene.environment;
     scene.environment = tex;
     scene.environmentRotation.y = 1.2;
-  })
-  .catch(() => {});
+    if (old) old.dispose();
+  });
+}
+const envPromise = loadEnv('assets/env/studio-lite.hdr').catch(() => {});
 
-const setPromise = gltfLoader.loadAsync('assets/models/chess-set.glb', (e) => {
+const setPromise = gltfLoader.loadAsync('assets/models/chess-set-lite.glb', (e) => {
   if (e.total) setProgress((e.loaded / e.total) * 0.9);
 });
+
+function loadFullQuality() {
+  loadEnv('assets/env/studio.hdr').catch(() => {});
+  gltfLoader
+    .loadAsync('assets/models/chess-set.glb')
+    .then((full) => {
+      const fullMats = {};
+      full.scene.traverse((o) => {
+        if (!o.isMesh) return;
+        for (const m of [o.material].flat()) fullMats[m.name] = m;
+        o.geometry.dispose(); // only the textures are needed
+      });
+      // one material per tick, so the texture uploads do not stall a frame
+      const queue = Object.entries(setMaterials);
+      const next = () => {
+        const item = queue.shift();
+        if (!item) return;
+        const [name, m] = item;
+        const f = fullMats[name];
+        if (f) {
+          for (const key of Object.keys(m)) {
+            const old = m[key];
+            if (old && old.isTexture && f[key] && f[key].isTexture) {
+              f[key].anisotropy = old.anisotropy;
+              m[key] = f[key];
+              old.dispose();
+            }
+          }
+        }
+        setTimeout(next, 40);
+      };
+      next();
+    })
+    .catch(() => {});
+}
 
 Promise.all([setPromise, envPromise])
   .then(async ([gltf]) => {
@@ -1175,6 +1392,9 @@ Promise.all([setPromise, envPromise])
     setProgress(1);
     last = performance.now();
     renderer.setAnimationLoop(frame);
+    // the full textures wait until the opening drop has played, so decoding them never stutters it
+    const introPlays = !reduceMotion && cGoal < 0.5;
+    setTimeout(loadFullQuality, introPlays ? (INTRO_HANG + 2.3) * 1000 : 800);
   })
   .catch((err) => {
     console.error('Chess set failed to load', err);
@@ -1183,3 +1403,4 @@ Promise.all([setPromise, envPromise])
 
 window.addEventListener('load', measure);
 if (document.fonts) document.fonts.ready.then(measure);
+
